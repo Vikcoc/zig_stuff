@@ -13,48 +13,53 @@ const Tst = struct {
     }
 };
 
-const Container = struct {
-    comptime services: std.AutoHashMap(type, std.builtin.Type.Fn) = .{},
-    pub fn addFactory(comptime this: *Container, comptime function: anytype) *Container {
-        const tp = this.services.getKey(@TypeOf(function).Fn.return_type.?);
-        if (tp != null)
-            @compileLog("Cannot insert 2 factory methods for the same type: {s}", .{@typeName(tp.?)});
-
-        inline for (@typeInfo(@TypeOf(function)).Fn.params) |param| {
-            const ptp = this.services.getKey(param.type.?);
-            if (ptp == null)
-                @compileLog("Cannot generate type {s}", .{@typeName(param.type.?)});
+const DIContainer = struct {
+    comptime head: type = undefined,
+    comptime count: u64 = 0,
+    pub fn addFactory(comptime this: *DIContainer, comptime func: anytype) DIContainer {
+        const tp = @typeInfo(@TypeOf(func));
+        switch (tp) {
+            .Fn => {},
+            inline else => @compileLog("Type {s} is not a function", .{@typeName(tp)}),
         }
-        this.services.addOne(function);
+        comptime var fact = this.head;
+        comptime var satisfied = 0;
+        inline for (0..this.count) |_| {
+            inline for (tp.Fn.params) |param| {
+                if (@typeInfo(@TypeOf(fact.fabricate)).Fn.return_type.? == param.type.?) {
+                    satisfied += 1;
+                }
+            }
+            fact = fact.next;
+        }
+
+        if (satisfied < tp.Fn.params.len) {
+            @compileLog("Cannot create type {s}", .{tp.Fn.return_type.?});
+        }
+
+        fact = this.head;
+        inline for (0..this.count) |_| {
+            if (@typeInfo(@TypeOf(fact.fabricate)).Fn.return_type.? == tp.Fn.return_type.?)
+                @compileLog("Type {s} is already injected", .{tp.Fn.return_type.?});
+        }
+
+        const ntp = struct { next: type = this.head, fabricate: @TypeOf(func) = func };
+        this.head = ntp;
+
         return this;
-    }
-    pub fn inject(comptime this: *Container, comptime function: anytype) @typeInfo(@TypeOf(function)).Fn.return_type.? {
-        const tp = @typeInfo(@TypeOf(function));
-        comptime var argt: [tp.Fn.params.len]type = undefined;
-        inline for (tp.Fn.params, 0..) |param, index| {
-            const ptp = this.services.getKey(param.type.?);
-            if (ptp == null)
-                @compileLog("Cannot generate type {s}", .{@typeName(param.type.?)});
-            argt[index] = param.type.?;
-        }
-        const tptp = std.meta.Tuple(argt[0..]);
-        const fields = @typeInfo(tptp).Struct.fields;
-        const y: tptp = undefined;
-        inline for (fields) |field| {
-            const fun = this.services[field.type];
-            @field(y, field.name) = this.inject(fun);
-        }
-
-        return @call(std.builtin.CallModifier.auto, function, y);
     }
 };
 
+pub fn tstFactory() Tst {
+    const x = Tst{ .x = 20, .y = 10 };
+    return x;
+}
+
 pub fn main() void {
-    comptime var cont: Container = .{};
-    cont.addFactory(fn () Tst{return .{}});
-    cont.addFactory(fn () Tst{return 20});
-    std.debug.print("This is returned {d}\n", .{cont.inject(extraReturn)});
-    cont.inject(extra);
+    comptime var cont: DIContainer = .{ .head = undefined, .count = 0 };
+    _ = cont.addFactory(tstFactory);
+    // std.debug.print("This is returned {d}\n", .{cont.inject(extraReturn)});
+    // cont.inject(extra);
 }
 
 pub fn doInvoke(comptime func: anytype) @typeInfo(@TypeOf(func)).Fn.return_type.? {
